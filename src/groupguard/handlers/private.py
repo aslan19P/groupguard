@@ -32,6 +32,7 @@ from groupguard.keyboards import (
     case_list_keyboard,
     dashboard_keyboard,
     group_request_keyboard,
+    help_keyboard,
     owner_list_keyboard,
     profile_keyboard,
     sanction_list_keyboard,
@@ -68,6 +69,51 @@ router.message.filter(F.chat.type == ChatType.PRIVATE)
 router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{5,32}$")
+
+OWNER_HELP_TEXT = """<b>Помощь GroupGuard</b>
+
+<b>Основные команды</b>
+• /menu — открыть панель управления
+• /help — показать эту справку
+
+<b>Как подключить группу</b>
+1. Добавьте бота администратором группы.
+2. Разрешите удаление сообщений и блокировку пользователей.
+3. В @BotFather отключите Group Privacy для этого бота.
+4. Нажмите «Подключить группу», затем «Выбрать группу».
+
+Если Telegram скрыл кнопку «Выбрать группу», нажмите значок клавиатуры из четырёх
+квадратов рядом со строкой ввода.
+
+<b>Как добавить человека в белый список</b>
+1. Человек должен хотя бы один раз написать в подключённой группе.
+2. Нажмите «Найти человека».
+3. Отправьте его @username или Telegram ID.
+4. В карточке нажмите «В белый список».
+
+Владельцы защищены автоматически — добавлять их в белый список не нужно. Раздел
+«Белый список» показывает уже добавленных людей и позволяет удалить их оттуда.
+
+<b>Что бот делает автоматически</b>
+Если один автор в тот же календарный день Ташкента повторит одинаковый текст с хотя
+бы одним тем же номером телефона, бот выдаст мут на 7 дней и удалит повтор. Первое
+сообщение останется.
+
+Похожие тексты, одинаковые номера у разных аккаунтов и повторные фотографии не
+наказываются автоматически — они попадают в раздел «На проверке».
+
+<b>Если что-то не работает</b>
+• Пользователь не найден — попросите его написать сообщение в группе.
+• Группа не выбирается — сохраните права администратора и откройте скрытую клавиатуру.
+• Бот не видит сообщения — отключите Group Privacy в @BotFather.
+• Старая панель не обновилась — отправьте /menu.
+"""
+
+GUEST_HELP_TEXT = """<b>GroupGuard</b>
+
+Это личная панель владельцев бота-модератора. Для доступа попросите действующего
+владельца добавить ваш @username и отправить одноразовую ссылку-приглашение.
+"""
 
 
 class OwnerInput(StatesGroup):
@@ -186,6 +232,16 @@ async def start(
 @router.message(Command("menu"))
 async def menu(message: Message, session: AsyncSession) -> None:
     await send_dashboard(message, session)
+
+
+@router.message(Command("help"))
+async def help_command(message: Message, session: AsyncSession) -> None:
+    if message.from_user is None:
+        return
+    if await is_owner(session, message.from_user.id):
+        await message.answer(OWNER_HELP_TEXT, reply_markup=help_keyboard())
+    else:
+        await message.answer(GUEST_HELP_TEXT)
 
 
 async def edit_panel(
@@ -355,9 +411,19 @@ async def connect_group(callback: CallbackQuery, session: AsyncSession) -> None:
         return
     await callback.message.answer(
         "Добавьте бота администратором группы с правами удаления сообщений и ограничения "
-        "участников, затем нажмите кнопку ниже.",
+        "участников, затем нажмите кнопку ниже. Если Telegram спрятал кнопку, нажмите "
+        "значок клавиатуры из четырёх квадратов рядом со строкой ввода.",
         reply_markup=group_request_keyboard(),
     )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "panel:help")
+async def panel_help(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not await require_owner(session, callback.from_user.id) or callback.message is None:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    await edit_panel(callback, OWNER_HELP_TEXT, help_keyboard())
     await callback.answer()
 
 

@@ -52,6 +52,7 @@ async def main() -> None:
             [
                 BotCommand(command="start", description="Открыть панель"),
                 BotCommand(command="menu", description="Показать меню"),
+                BotCommand(command="help", description="Помощь и частые вопросы"),
             ],
             scope=BotCommandScopeAllPrivateChats(),
         )

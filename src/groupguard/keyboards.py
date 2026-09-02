@@ -30,6 +30,15 @@ def dashboard_keyboard(notifications_enabled: bool = True) -> InlineKeyboardMark
             ],
             [InlineKeyboardButton(text=notification_label, callback_data="panel:notifications")],
             [InlineKeyboardButton(text="➕ Подключить группу", callback_data="panel:connect")],
+            [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="panel:help")],
+        ]
+    )
+
+
+def help_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ В меню", callback_data="panel:home")],
         ]
     )
 

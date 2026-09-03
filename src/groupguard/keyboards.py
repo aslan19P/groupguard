@@ -10,6 +10,7 @@ from aiogram.types import (
 )
 
 from groupguard.models import ModerationCase
+from groupguard.presentation import reason_label
 
 
 def dashboard_keyboard(notifications_enabled: bool = True) -> InlineKeyboardMarkup:
@@ -43,16 +44,21 @@ def help_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def case_keyboard(case: ModerationCase) -> InlineKeyboardMarkup | None:
+def case_keyboard(
+    case: ModerationCase,
+    *,
+    user_label: str,
+    profile_url: str,
+) -> InlineKeyboardMarkup | None:
+    profile_row = [
+        InlineKeyboardButton(text=f"👤 {user_label}", url=profile_url),
+        InlineKeyboardButton(
+            text="📋 История",
+            callback_data=f"case:{case.id}:history",
+        ),
+    ]
     if case.status != "open":
-        rows = [
-            [
-                InlineKeyboardButton(
-                    text="👤 История пользователя",
-                    callback_data=f"case:{case.id}:history",
-                )
-            ]
-        ]
+        rows = [profile_row]
         if case.resolution in {"auto_muted", "muted", "auto_partial"}:
             rows.append(
                 [
@@ -80,37 +86,40 @@ def case_keyboard(case: ModerationCase) -> InlineKeyboardMarkup | None:
                     text="🛡 В белый список",
                     callback_data=f"case:{case.id}:allow",
                 ),
-                InlineKeyboardButton(
-                    text="👤 История",
-                    callback_data=f"case:{case.id}:history",
-                ),
             ],
+            profile_row,
         ]
     )
 
 
-def case_list_keyboard(cases: list[ModerationCase]) -> InlineKeyboardMarkup:
-    rows = [
-        [
-            InlineKeyboardButton(
-                text=f"⚠️ {case.reason} · {case.target_user_id}",
-                callback_data=f"case:{case.id}:show",
-            )
-        ]
-        for case in cases
-    ]
+def case_list_keyboard(cases: list[tuple[ModerationCase, str, str]]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for case, user_label, profile_url in cases:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"⚠️ {reason_label(case.reason)} · {user_label}",
+                    callback_data=f"case:{case.id}:show",
+                )
+            ]
+        )
+        rows.append(
+            [InlineKeyboardButton(text=f"👤 {user_label}", url=profile_url)]
+        )
     rows.append([InlineKeyboardButton(text="⬅️ В меню", callback_data="panel:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def owner_list_keyboard(owner_ids: list[int]) -> InlineKeyboardMarkup:
+def owner_list_keyboard(owners: list[tuple[int, str, str]]) -> InlineKeyboardMarkup:
     rows = [
         [
+            InlineKeyboardButton(text=f"👤 {user_label}", url=profile_url),
             InlineKeyboardButton(
-                text=f"➖ Удалить {user_id}", callback_data=f"owner:remove:{user_id}"
-            )
+                text="➖ Удалить",
+                callback_data=f"owner:remove:{user_id}",
+            ),
         ]
-        for user_id in owner_ids
+        for user_id, user_label, profile_url in owners
     ]
     rows.extend(
         [
@@ -121,33 +130,43 @@ def owner_list_keyboard(owner_ids: list[int]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def sanction_list_keyboard(sanctions: list[tuple[str, int]]) -> InlineKeyboardMarkup:
+def sanction_list_keyboard(sanctions: list[tuple[str, str, str]]) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(
-                text=f"🔊 Снять мут {user_id}", callback_data=f"sanction:unmute:{sid}"
-            )
+                text=f"👤 {user_label}",
+                url=profile_url,
+            ),
+            InlineKeyboardButton(text="🔊 Снять мут", callback_data=f"sanction:unmute:{sid}"),
         ]
-        for sid, user_id in sanctions
+        for sid, user_label, profile_url in sanctions
     ]
     rows.append([InlineKeyboardButton(text="⬅️ В меню", callback_data="panel:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def allowlist_keyboard(user_ids: list[int]) -> InlineKeyboardMarkup:
+def allowlist_keyboard(users: list[tuple[int, str, str]]) -> InlineKeyboardMarkup:
     rows = [
         [
+            InlineKeyboardButton(text=f"👤 {user_label}", url=profile_url),
             InlineKeyboardButton(
-                text=f"➖ Удалить {user_id}", callback_data=f"allow:remove:{user_id}"
-            )
+                text="➖ Удалить",
+                callback_data=f"allow:remove:{user_id}",
+            ),
         ]
-        for user_id in user_ids
+        for user_id, user_label, profile_url in users
     ]
     rows.append([InlineKeyboardButton(text="⬅️ В меню", callback_data="panel:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def profile_keyboard(user_id: int, *, allowlisted: bool) -> InlineKeyboardMarkup:
+def profile_keyboard(
+    user_id: int,
+    *,
+    allowlisted: bool,
+    user_label: str,
+    profile_url: str,
+) -> InlineKeyboardMarkup:
     allow_button = (
         InlineKeyboardButton(
             text="➖ Убрать из белого списка",
@@ -161,6 +180,7 @@ def profile_keyboard(user_id: int, *, allowlisted: bool) -> InlineKeyboardMarkup
     )
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text=f"👤 {user_label}", url=profile_url)],
             [allow_button],
             [
                 InlineKeyboardButton(

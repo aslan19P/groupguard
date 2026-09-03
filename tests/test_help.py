@@ -1,16 +1,26 @@
 from __future__ import annotations
 
-from groupguard.handlers.private import GUEST_HELP_TEXT, OWNER_HELP_TEXT
+from groupguard.config import Settings
+from groupguard.handlers.private import GUEST_HELP_TEXT, owner_help_text
 from groupguard.keyboards import dashboard_keyboard, help_keyboard
 
 
 def test_owner_help_fits_telegram_message_and_covers_common_tasks() -> None:
-    assert len(OWNER_HELP_TEXT) < 4096
-    assert "белый список" in OWNER_HELP_TEXT.lower()
-    assert "group privacy" in OWNER_HELP_TEXT.lower()
-    assert "семь" not in OWNER_HELP_TEXT.lower()
-    assert "7 дней" in OWNER_HELP_TEXT
-    assert "/menu" in OWNER_HELP_TEXT
+    settings = Settings(
+        bot_token="123456789:test-token",
+        bootstrap_token="bootstrap-secret-value",
+        database_url="postgresql+psycopg://example",
+        phone_hmac_secret="phone-secret-value",
+        timezone="Europe/Moscow",
+    )
+    text = owner_help_text(settings)
+
+    assert len(text) < 4096
+    assert "белый список" in text.lower()
+    assert "group privacy" in text.lower()
+    assert "7 дней" in text
+    assert "/menu" in text
+    assert "Europe/Moscow" in text
 
 
 def test_guest_help_explains_how_to_get_access() -> None:

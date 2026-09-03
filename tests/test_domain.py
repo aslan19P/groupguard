@@ -10,6 +10,7 @@ from aiogram.types import MessageEntity
 from groupguard.domain import (
     build_fingerprint,
     extract_phones,
+    format_local_datetime,
     local_calendar_date,
     normalize_phone,
     normalize_text,
@@ -96,6 +97,13 @@ def test_tashkent_calendar_date_changes_at_local_midnight() -> None:
     after = datetime(2026, 9, 1, 19, 0, 0, tzinfo=UTC)
     assert local_calendar_date(before, timezone).isoformat() == "2026-09-01"
     assert local_calendar_date(after, timezone).isoformat() == "2026-09-02"
+
+
+def test_datetime_is_formatted_in_configured_timezone() -> None:
+    timestamp = datetime(2026, 9, 3, 5, 39, tzinfo=UTC)
+
+    assert format_local_datetime(timestamp, ZoneInfo("Asia/Tashkent")) == "03.09.2026 10:39"
+    assert format_local_datetime(timestamp, ZoneInfo("Europe/Moscow")) == "03.09.2026 08:39"
 
 
 @pytest.mark.parametrize(

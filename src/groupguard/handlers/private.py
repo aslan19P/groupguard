@@ -26,7 +26,7 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from groupguard.config import Settings
-from groupguard.domain import normalize_username
+from groupguard.domain import format_local_datetime, normalize_username
 from groupguard.keyboards import (
     allowlist_keyboard,
     case_list_keyboard,
@@ -50,6 +50,13 @@ from groupguard.models import (
     UserProfile,
     uuid_str,
 )
+from groupguard.presentation import (
+    reason_label,
+    resolution_label,
+    user_button_label,
+    user_profile_url,
+    user_reference,
+)
 from groupguard.repositories import (
     add_audit,
     find_user,
@@ -70,7 +77,7 @@ router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{5,32}$")
 
-OWNER_HELP_TEXT = """<b>Помощь GroupGuard</b>
+OWNER_HELP_TEXT_TEMPLATE = """<b>Помощь GroupGuard</b>
 
 <b>Основные команды</b>
 • /menu — открыть панель управления
@@ -95,9 +102,9 @@ OWNER_HELP_TEXT = """<b>Помощь GroupGuard</b>
 «Белый список» показывает уже добавленных людей и позволяет удалить их оттуда.
 
 <b>Что бот делает автоматически</b>
-Если один автор в тот же календарный день Ташкента повторит одинаковый текст с хотя
-бы одним тем же номером телефона, бот выдаст мут на 7 дней и удалит повтор. Первое
-сообщение останется.
+Если один автор в тот же календарный день часового пояса <code>{timezone}</code>
+повторит одинаковый текст с хотя бы одним тем же номером телефона, бот выдаст мут
+на 7 дней и удалит повтор. Первое сообщение останется.
 
 Похожие тексты, одинаковые номера у разных аккаунтов и повторные фотографии не
 наказываются автоматически — они попадают в раздел «На проверке».
@@ -107,6 +114,10 @@ OWNER_HELP_TEXT = """<b>Помощь GroupGuard</b>
 • Группа не выбирается — сохраните права администратора и откройте скрытую клавиатуру.
 • Бот не видит сообщения — отключите Group Privacy в @BotFather.
 • Старая панель не обновилась — отправьте /menu.
+
+Во всех разделах нажмите имя человека или кнопку 👤, чтобы открыть его профиль. Если
+у него нет публичного @username, бот использует внутреннюю Telegram-ссылку по
+user_id и явно показывает пометку «username отсутствует».
 """
 
 GUEST_HELP_TEXT = """<b>GroupGuard</b>
@@ -116,6 +127,10 @@ GUEST_HELP_TEXT = """<b>GroupGuard</b>
 """
 
 
+def owner_help_text(settings: Settings) -> str:
+    return OWNER_HELP_TEXT_TEMPLATE.format(timezone=html.escape(settings.timezone))
+
+
 class OwnerInput(StatesGroup):
     username = State()
     search = State()
@@ -123,6 +138,22 @@ class OwnerInput(StatesGroup):
 
 async def require_owner(session: AsyncSession, user_id: int) -> bool:
     return await is_owner(session, user_id)
+
+
+async def profiles_by_id(
+    session: AsyncSession,
+    user_ids: list[int],
+) -> dict[int, UserProfile]:
+    if not user_ids:
+        return {}
+    profiles = list(
+        (
+            await session.scalars(
+                select(UserProfile).where(UserProfile.user_id.in_(set(user_ids)))
+            )
+        ).all()
+    )
+    return {profile.user_id: profile for profile in profiles}
 
 
 async def send_dashboard(message: Message, session: AsyncSession) -> None:
@@ -221,8 +252,7 @@ async def start(
         await session.commit()
         await notifier.critical(
             session,
-            f"Добавлен новый владелец: <b>{html.escape(profile.display_name)}</b> "
-            f"(<code>{user.id}</code>).",
+            f"Добавлен новый владелец:\n{user_reference(user.id, profile)}",
         )
         await session.commit()
 
@@ -235,11 +265,11 @@ async def menu(message: Message, session: AsyncSession) -> None:
 
 
 @router.message(Command("help"))
-async def help_command(message: Message, session: AsyncSession) -> None:
+async def help_command(message: Message, session: AsyncSession, settings: Settings) -> None:
     if message.from_user is None:
         return
     if await is_owner(session, message.from_user.id):
-        await message.answer(OWNER_HELP_TEXT, reply_markup=help_keyboard())
+        await message.answer(owner_help_text(settings), reply_markup=help_keyboard())
     else:
         await message.answer(GUEST_HELP_TEXT)
 
@@ -293,13 +323,31 @@ async def panel_cases(callback: CallbackQuery, session: AsyncSession) -> None:
             )
         ).all()
     )
+    profiles = await profiles_by_id(session, [case.target_user_id for case in cases])
     text = "<b>На проверке</b>\n\nВыберите случай." if cases else "Очередь проверки пуста."
-    await edit_panel(callback, text, case_list_keyboard(cases))
+    await edit_panel(
+        callback,
+        text,
+        case_list_keyboard(
+            [
+                (
+                    case,
+                    user_button_label(case.target_user_id, profiles.get(case.target_user_id)),
+                    user_profile_url(case.target_user_id, profiles.get(case.target_user_id)),
+                )
+                for case in cases
+            ]
+        ),
+    )
     await callback.answer()
 
 
 @router.callback_query(F.data == "panel:sanctions")
-async def panel_sanctions(callback: CallbackQuery, session: AsyncSession) -> None:
+async def panel_sanctions(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    settings: Settings,
+) -> None:
     if not await require_owner(session, callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
@@ -313,14 +361,31 @@ async def panel_sanctions(callback: CallbackQuery, session: AsyncSession) -> Non
             )
         ).all()
     )
+    profiles = await profiles_by_id(session, [item.user_id for item in sanctions])
     lines = [
-        f"• <code>{item.user_id}</code> до {item.until_at:%d.%m %H:%M} UTC" for item in sanctions
+        f"• {user_reference(item.user_id, profiles.get(item.user_id))}\n"
+        f"  Мут до "
+        f"{format_local_datetime(item.until_at, settings.zoneinfo, '%d.%m %H:%M')}"
+        for item in sanctions
     ]
-    text = "<b>Активные ограничения</b>\n\n" + ("\n".join(lines) if lines else "Список пуст.")
+    text = (
+        f"<b>Активные ограничения</b>\n"
+        f"Время: <code>{html.escape(settings.timezone)}</code>\n\n"
+        + ("\n".join(lines) if lines else "Список пуст.")
+    )
     await edit_panel(
         callback,
         text,
-        sanction_list_keyboard([(item.id, item.user_id) for item in sanctions]),
+        sanction_list_keyboard(
+            [
+                (
+                    item.id,
+                    user_button_label(item.user_id, profiles.get(item.user_id)),
+                    user_profile_url(item.user_id, profiles.get(item.user_id)),
+                )
+                for item in sanctions
+            ]
+        ),
     )
     await callback.answer()
 
@@ -331,12 +396,29 @@ async def panel_allowlist(callback: CallbackQuery, session: AsyncSession) -> Non
         await callback.answer("Нет доступа", show_alert=True)
         return
     entries = list((await session.scalars(select(AllowlistEntry).limit(30))).all())
+    profiles = await profiles_by_id(session, [entry.user_id for entry in entries])
     text = "<b>Белый список</b>\n\n" + (
-        "\n".join(f"• <code>{entry.user_id}</code>" for entry in entries)
+        "\n".join(
+            f"• {user_reference(entry.user_id, profiles.get(entry.user_id))}"
+            for entry in entries
+        )
         if entries
         else "Список пуст."
     )
-    await edit_panel(callback, text, allowlist_keyboard([entry.user_id for entry in entries]))
+    await edit_panel(
+        callback,
+        text,
+        allowlist_keyboard(
+            [
+                (
+                    entry.user_id,
+                    user_button_label(entry.user_id, profiles.get(entry.user_id)),
+                    user_profile_url(entry.user_id, profiles.get(entry.user_id)),
+                )
+                for entry in entries
+            ]
+        ),
+    )
     await callback.answer()
 
 
@@ -348,20 +430,32 @@ async def panel_owners(callback: CallbackQuery, session: AsyncSession) -> None:
     owners = await list_owners(session)
     profiles = [await session.get(UserProfile, owner.user_id) for owner in owners]
     lines = [
-        f"• {html.escape(profile.display_name) if profile else 'Неизвестно'} "
-        f"(<code>{owner.user_id}</code>)"
+        f"• {user_reference(owner.user_id, profile)}"
         for owner, profile in zip(owners, profiles, strict=True)
     ]
     await edit_panel(
         callback,
         "<b>Владельцы</b>\n\n" + "\n".join(lines),
-        owner_list_keyboard([owner.user_id for owner in owners]),
+        owner_list_keyboard(
+            [
+                (
+                    owner.user_id,
+                    user_button_label(owner.user_id, profile),
+                    user_profile_url(owner.user_id, profile),
+                )
+                for owner, profile in zip(owners, profiles, strict=True)
+            ]
+        ),
     )
     await callback.answer()
 
 
 @router.callback_query(F.data == "panel:audit")
-async def panel_audit(callback: CallbackQuery, session: AsyncSession) -> None:
+async def panel_audit(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    settings: Settings,
+) -> None:
     if not await require_owner(session, callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
@@ -372,16 +466,27 @@ async def panel_audit(callback: CallbackQuery, session: AsyncSession) -> None:
             )
         ).all()
     )
+    profiles = await profiles_by_id(
+        session,
+        [event.target_user_id for event in events if event.target_user_id is not None],
+    )
     lines = [
-        f"• {event.created_at:%d.%m %H:%M} — {event.action}"
-        f"{f' · {event.target_user_id}' if event.target_user_id else ''}"
+        f"• {format_local_datetime(event.created_at, settings.zoneinfo, '%d.%m %H:%M')} — "
+        f"{event.action}"
+        + (
+            f"\n  {user_reference(event.target_user_id, profiles.get(event.target_user_id))}"
+            if event.target_user_id is not None
+            else ""
+        )
         for event in events
     ]
     owner = await session.get(Owner, callback.from_user.id)
     assert owner is not None
     await edit_panel(
         callback,
-        "<b>История действий</b>\n\n" + ("\n".join(lines) if lines else "История пуста."),
+        f"<b>История действий</b>\n"
+        f"Время: <code>{html.escape(settings.timezone)}</code>\n\n"
+        + ("\n".join(lines) if lines else "История пуста."),
         dashboard_keyboard(owner.notifications_enabled),
     )
     await callback.answer()
@@ -419,11 +524,15 @@ async def connect_group(callback: CallbackQuery, session: AsyncSession) -> None:
 
 
 @router.callback_query(F.data == "panel:help")
-async def panel_help(callback: CallbackQuery, session: AsyncSession) -> None:
+async def panel_help(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    settings: Settings,
+) -> None:
     if not await require_owner(session, callback.from_user.id) or callback.message is None:
         await callback.answer("Нет доступа", show_alert=True)
         return
-    await edit_panel(callback, OWNER_HELP_TEXT, help_keyboard())
+    await edit_panel(callback, owner_help_text(settings), help_keyboard())
     await callback.answer()
 
 
@@ -553,6 +662,7 @@ async def owner_remove(
     if owner is None:
         await callback.answer("Владелец уже удалён.", show_alert=True)
         return
+    profile = await session.get(UserProfile, target_id)
     await session.delete(owner)
     await add_audit(
         session,
@@ -561,7 +671,10 @@ async def owner_remove(
         target_user_id=target_id,
     )
     await session.commit()
-    await notifier.critical(session, f"Удалён владелец <code>{target_id}</code>.")
+    await notifier.critical(
+        session,
+        f"Удалён владелец:\n{user_reference(target_id, profile)}",
+    )
     await session.commit()
     if target_id == callback.from_user.id:
         if isinstance(callback.message, Message):
@@ -582,10 +695,14 @@ async def panel_search(callback: CallbackQuery, state: FSMContext, session: Asyn
     await callback.answer()
 
 
-async def profile_text(session: AsyncSession, profile: UserProfile) -> str:
-    username = f"@{profile.current_username}" if profile.current_username else "нет"
+async def profile_text(
+    session: AsyncSession,
+    profile: UserProfile,
+    settings: Settings,
+) -> str:
     last = (
-        profile.last_violation_at.strftime("%d.%m.%Y %H:%M UTC")
+        f"{format_local_datetime(profile.last_violation_at, settings.zoneinfo)} "
+        f"({html.escape(settings.timezone)})"
         if profile.last_violation_at
         else "нет"
     )
@@ -610,14 +727,13 @@ async def profile_text(session: AsyncSession, profile: UserProfile) -> str:
     )
     alias_line = ", ".join(f"@{item.username}" for item in aliases) or "нет"
     case_lines = [
-        f"• {case.created_at:%d.%m.%Y} — {html.escape(case.reason)} / "
-        f"{html.escape(case.resolution or case.status)}"
+        f"• {format_local_datetime(case.created_at, settings.zoneinfo, '%d.%m.%Y')} — "
+        f"{html.escape(reason_label(case.reason))} / "
+        f"{html.escape(resolution_label(case.resolution or case.status))}"
         for case in cases
     ]
     details = (
-        f"<b>{html.escape(profile.display_name)}</b>\n"
-        f"ID: <code>{profile.user_id}</code>\n"
-        f"Username: {username}\n"
+        f"<b>Пользователь</b>\n{user_reference(profile.user_id, profile)}\n"
         f"Известные usernames: {alias_line}\n"
         f"Нарушений: {profile.violation_count}\n"
         f"Удалений: {profile.deletion_count}\n"
@@ -630,7 +746,12 @@ async def profile_text(session: AsyncSession, profile: UserProfile) -> str:
 
 
 @router.message(OwnerInput.search)
-async def search_user(message: Message, state: FSMContext, session: AsyncSession) -> None:
+async def search_user(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    settings: Settings,
+) -> None:
     if message.from_user is None or not await require_owner(session, message.from_user.id):
         await state.clear()
         return
@@ -640,8 +761,13 @@ async def search_user(message: Message, state: FSMContext, session: AsyncSession
     else:
         allowlisted = await session.get(AllowlistEntry, profile.user_id) is not None
         await message.answer(
-            await profile_text(session, profile),
-            reply_markup=profile_keyboard(profile.user_id, allowlisted=allowlisted),
+            await profile_text(session, profile, settings),
+            reply_markup=profile_keyboard(
+                profile.user_id,
+                allowlisted=allowlisted,
+                user_label=user_button_label(profile.user_id, profile),
+                profile_url=user_profile_url(profile.user_id, profile),
+            ),
         )
     await state.clear()
 
@@ -652,6 +778,7 @@ async def case_action(
     session: AsyncSession,
     actions: CaseActionService,
     notifier: NotificationService,
+    settings: Settings,
 ) -> None:
     if not await require_owner(session, callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
@@ -673,8 +800,13 @@ async def case_action(
         if callback.message and profile:
             allowlisted = await session.get(AllowlistEntry, profile.user_id) is not None
             await callback.message.answer(
-                await profile_text(session, profile),
-                reply_markup=profile_keyboard(profile.user_id, allowlisted=allowlisted),
+                await profile_text(session, profile, settings),
+                reply_markup=profile_keyboard(
+                    profile.user_id,
+                    allowlisted=allowlisted,
+                    user_label=user_button_label(profile.user_id, profile),
+                    profile_url=user_profile_url(profile.user_id, profile),
+                ),
             )
         await callback.answer()
         return
@@ -702,6 +834,7 @@ async def sanction_unmute(
     callback: CallbackQuery,
     session: AsyncSession,
     actions: CaseActionService,
+    settings: Settings,
 ) -> None:
     if not await require_owner(session, callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
@@ -714,7 +847,7 @@ async def sanction_unmute(
     try:
         await actions.unmute_user(session, sanction.user_id, callback.from_user.id)
         await callback.answer("Ограничение снято.", show_alert=True)
-        await panel_sanctions(callback, session)
+        await panel_sanctions(callback, session, settings)
     except CaseActionError as error:
         await callback.answer(str(error), show_alert=True)
 
@@ -744,6 +877,7 @@ async def profile_action(
     callback: CallbackQuery,
     session: AsyncSession,
     actions: CaseActionService,
+    settings: Settings,
 ) -> None:
     if not await require_owner(session, callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
@@ -796,7 +930,12 @@ async def profile_action(
     if isinstance(callback.message, Message):
         allowlisted = await session.get(AllowlistEntry, user_id) is not None
         await callback.message.answer(
-            await profile_text(session, profile),
-            reply_markup=profile_keyboard(user_id, allowlisted=allowlisted),
+            await profile_text(session, profile, settings),
+            reply_markup=profile_keyboard(
+                user_id,
+                allowlisted=allowlisted,
+                user_label=user_button_label(user_id, profile),
+                profile_url=user_profile_url(user_id, profile),
+            ),
         )
     await callback.answer(result, show_alert=True)

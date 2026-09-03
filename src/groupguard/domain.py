@@ -136,6 +136,14 @@ def local_calendar_date(timestamp: datetime, timezone: ZoneInfo) -> date:
     return timestamp.astimezone(timezone).date()
 
 
+def format_local_datetime(
+    timestamp: datetime,
+    timezone: ZoneInfo,
+    date_format: str = "%d.%m.%Y %H:%M",
+) -> str:
+    return timestamp.astimezone(timezone).strftime(date_format)
+
+
 def safe_excerpt(text: str, limit: int = 300) -> str:
     compact = " ".join(text.split())
     return compact if len(compact) <= limit else f"{compact[: limit - 1]}…"

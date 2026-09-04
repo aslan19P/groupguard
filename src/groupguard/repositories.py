@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from groupguard.domain import normalize_username
@@ -28,32 +29,42 @@ async def upsert_user(
     username: str | None,
     display_name: str,
 ) -> UserProfile:
-    profile = await session.get(UserProfile, user_id)
     normalized = normalize_username(username) if username else None
     now = datetime.now(UTC)
-    if profile is None:
-        profile = UserProfile(
+    profile_statement = (
+        insert(UserProfile)
+        .values(
             user_id=user_id,
             current_username=normalized,
             display_name=display_name,
         )
-        session.add(profile)
-        await session.flush()
-    else:
-        profile.current_username = normalized
-        profile.display_name = display_name
+        .on_conflict_do_update(
+            index_elements=[UserProfile.user_id],
+            set_={
+                "current_username": normalized,
+                "display_name": display_name,
+                "updated_at": now,
+            },
+        )
+        .returning(UserProfile)
+    )
+    profile = (
+        await session.scalars(
+            profile_statement,
+            execution_options={"populate_existing": True},
+        )
+    ).one()
 
     if normalized:
-        alias = await session.scalar(
-            select(UsernameAlias).where(
-                UsernameAlias.user_id == user_id,
-                UsernameAlias.username == normalized,
+        alias_statement = (
+            insert(UsernameAlias)
+            .values(user_id=user_id, username=normalized, last_seen_at=now)
+            .on_conflict_do_update(
+                index_elements=[UsernameAlias.user_id, UsernameAlias.username],
+                set_={"last_seen_at": now},
             )
         )
-        if alias is None:
-            session.add(UsernameAlias(user_id=user_id, username=normalized))
-        else:
-            alias.last_seen_at = now
+        await session.execute(alias_statement)
     return profile
 
 

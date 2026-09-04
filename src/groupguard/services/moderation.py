@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import io
 import logging
+import weakref
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
@@ -25,6 +26,7 @@ from groupguard.domain import (
     safe_excerpt,
     text_similarity,
 )
+from groupguard.error_reporting import summarize_exception
 from groupguard.models import MessageFingerprint, ModerationCase, Sanction
 from groupguard.repositories import (
     add_audit,
@@ -118,6 +120,19 @@ class ModerationService:
         self.bot = bot
         self.settings = settings
         self.notifier = notifier
+        self._locks_guard = asyncio.Lock()
+        self._user_locks: weakref.WeakValueDictionary[tuple[int, int], asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
+
+    async def _user_lock(self, chat_id: int, user_id: int) -> asyncio.Lock:
+        key = (chat_id, user_id)
+        async with self._locks_guard:
+            lock = self._user_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._user_locks[key] = lock
+            return lock
 
     async def _photo_phash(self, message: Message) -> str | None:
         if not message.photo:
@@ -135,11 +150,24 @@ class ModerationService:
     ) -> None:
         if message.from_user is None or message.from_user.is_bot:
             return
+        lock = await self._user_lock(message.chat.id, message.from_user.id)
+        async with lock:
+            await self._process_serialized(session, message, edited=edited)
+
+    async def _process_serialized(
+        self, session: AsyncSession, message: Message, *, edited: bool
+    ) -> None:
+        if message.from_user is None:
+            return
         managed = await get_managed_chat(session)
         if managed is None or message.chat.id != managed.chat_id:
             return
 
         user = message.from_user
+        await session.execute(
+            sql_text("SELECT pg_advisory_xact_lock(:key)"),
+            {"key": advisory_lock_key(managed.chat_id, user.id)},
+        )
         await upsert_user(session, user.id, user.username, user.full_name)
         if await is_immune(session, user.id):
             return
@@ -164,10 +192,6 @@ class ModerationService:
         source_time = message.date.astimezone(UTC)
         local_date = local_calendar_date(source_time, self.settings.zoneinfo)
         now = datetime.now(UTC)
-        await session.execute(
-            sql_text("SELECT pg_advisory_xact_lock(:key)"),
-            {"key": advisory_lock_key(managed.chat_id, user.id)},
-        )
         recent = await get_recent_fingerprints(
             session,
             managed.chat_id,
@@ -262,12 +286,14 @@ class ModerationService:
             )
             muted = True
         except (TelegramBadRequest, TelegramForbiddenError) as error:
-            errors.append(f"mute: {type(error).__name__}")
+            summary = summarize_exception(error)
+            errors.append(f"ограничение пользователя — {summary.detail}")
         try:
             await self.bot.delete_message(case.chat_id, case.source_message_id)
             deleted = True
         except (TelegramBadRequest, TelegramForbiddenError) as error:
-            errors.append(f"delete: {type(error).__name__}")
+            summary = summarize_exception(error)
+            errors.append(f"удаление сообщения — {summary.detail}")
 
         case.status = "resolved"
         case.resolved_at = datetime.now(UTC)
@@ -297,9 +323,10 @@ class ModerationService:
         await session.commit()
         await self.notifier.deliver_case(session, case)
         if errors:
+            details = "; ".join(errors)
             await self.notifier.critical(
                 session,
                 "Автоматическая санкция выполнена частично. Откройте карточку случая "
-                f"<code>{case.id}</code>.",
+                f"<code>{case.id}</code>. Не выполнено: {details}.",
             )
         await session.commit()

@@ -23,9 +23,10 @@ from groupguard.models import (
     ModerationCase,
     Owner,
     Sanction,
+    UsernameAlias,
     UserProfile,
 )
-from groupguard.repositories import cleanup_expired, is_immune
+from groupguard.repositories import cleanup_expired, is_immune, upsert_user
 from groupguard.services.cases import CaseActionError, CaseActionService
 from groupguard.services.moderation import ModerationService
 
@@ -77,6 +78,45 @@ async def test_owner_and_allowlist_are_immune(
         assert await is_immune(session, 1)
         assert await is_immune(session, 2)
         assert not await is_immune(session, 3)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_user_upsert_is_atomic(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    start = asyncio.Event()
+
+    async def save_profile() -> None:
+        await start.wait()
+        async with session_factory() as session:
+            await upsert_user(session, 9_911_223_344, "driver_one", "Driver")
+            await session.commit()
+
+    tasks = [asyncio.create_task(save_profile()) for _ in range(8)]
+    start.set()
+    await asyncio.gather(*tasks)
+
+    async with session_factory() as session:
+        profiles = list(
+            (
+                await session.scalars(
+                    select(UserProfile).where(UserProfile.user_id == 9_911_223_344)
+                )
+            ).all()
+        )
+        aliases = list(
+            (
+                await session.scalars(
+                    select(UsernameAlias).where(
+                        UsernameAlias.user_id == 9_911_223_344,
+                        UsernameAlias.username == "driver_one",
+                    )
+                )
+            ).all()
+        )
+
+    assert len(profiles) == 1
+    assert len(aliases) == 1
 
 
 @pytest.mark.asyncio
@@ -200,12 +240,14 @@ class FakeNotifier:
         self.sync_count = 0
         self.delivery_count = 0
         self.critical_count = 0
+        self.critical_messages: list[str] = []
 
     async def sync_case(self, session: AsyncSession, case: ModerationCase) -> None:
         self.sync_count += 1
 
     async def critical(self, session: AsyncSession, text: str) -> None:
         self.critical_count += 1
+        self.critical_messages.append(text)
 
     async def deliver_case(
         self,
@@ -314,6 +356,8 @@ async def test_partial_auto_sanction_notifies_all_owners(
         assert case.resolution == "auto_partial"
         assert notifier.delivery_count == 1
         assert notifier.critical_count == 1
+        assert "удаление сообщения" in notifier.critical_messages[0]
+        assert "не хватает необходимых прав" in notifier.critical_messages[0]
         profile = await session.get(UserProfile, 6)
         assert profile is not None
         await session.refresh(profile)

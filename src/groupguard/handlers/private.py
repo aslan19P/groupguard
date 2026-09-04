@@ -148,9 +148,7 @@ async def profiles_by_id(
         return {}
     profiles = list(
         (
-            await session.scalars(
-                select(UserProfile).where(UserProfile.user_id.in_(set(user_ids)))
-            )
+            await session.scalars(select(UserProfile).where(UserProfile.user_id.in_(set(user_ids))))
         ).all()
     )
     return {profile.user_id: profile for profile in profiles}
@@ -283,12 +281,23 @@ async def edit_panel(
         return
     try:
         await callback.message.edit_text(text, reply_markup=reply_markup)
-    except TelegramBadRequest:
-        await callback.message.answer(text, reply_markup=reply_markup)
+    except TelegramBadRequest as error:
+        message = error.message.casefold()
+        if "message is not modified" in message:
+            return
+        if "message can't be edited" in message or "message to edit not found" in message:
+            await callback.message.answer(text, reply_markup=reply_markup)
+            return
+        raise
 
 
 @router.callback_query(F.data == "panel:home")
-async def panel_home(callback: CallbackQuery, session: AsyncSession) -> None:
+async def panel_home(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    *,
+    acknowledge: bool = True,
+) -> None:
     if callback.from_user is None or not await require_owner(session, callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
@@ -305,7 +314,8 @@ async def panel_home(callback: CallbackQuery, session: AsyncSession) -> None:
         f"<b>GroupGuard</b>\n{group_line}\n\nВыберите действие:",
         dashboard_keyboard(owner.notifications_enabled),
     )
-    await callback.answer()
+    if acknowledge:
+        await callback.answer()
 
 
 @router.callback_query(F.data == "panel:cases")
@@ -347,6 +357,8 @@ async def panel_sanctions(
     callback: CallbackQuery,
     session: AsyncSession,
     settings: Settings,
+    *,
+    acknowledge: bool = True,
 ) -> None:
     if not await require_owner(session, callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
@@ -380,6 +392,7 @@ async def panel_sanctions(
             [
                 (
                     item.id,
+                    item.user_id,
                     user_button_label(item.user_id, profiles.get(item.user_id)),
                     user_profile_url(item.user_id, profiles.get(item.user_id)),
                 )
@@ -387,11 +400,17 @@ async def panel_sanctions(
             ]
         ),
     )
-    await callback.answer()
+    if acknowledge:
+        await callback.answer()
 
 
 @router.callback_query(F.data == "panel:allowlist")
-async def panel_allowlist(callback: CallbackQuery, session: AsyncSession) -> None:
+async def panel_allowlist(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    *,
+    acknowledge: bool = True,
+) -> None:
     if not await require_owner(session, callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
@@ -399,8 +418,7 @@ async def panel_allowlist(callback: CallbackQuery, session: AsyncSession) -> Non
     profiles = await profiles_by_id(session, [entry.user_id for entry in entries])
     text = "<b>Белый список</b>\n\n" + (
         "\n".join(
-            f"• {user_reference(entry.user_id, profiles.get(entry.user_id))}"
-            for entry in entries
+            f"• {user_reference(entry.user_id, profiles.get(entry.user_id))}" for entry in entries
         )
         if entries
         else "Список пуст."
@@ -419,11 +437,17 @@ async def panel_allowlist(callback: CallbackQuery, session: AsyncSession) -> Non
             ]
         ),
     )
-    await callback.answer()
+    if acknowledge:
+        await callback.answer()
 
 
 @router.callback_query(F.data == "panel:owners")
-async def panel_owners(callback: CallbackQuery, session: AsyncSession) -> None:
+async def panel_owners(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    *,
+    acknowledge: bool = True,
+) -> None:
     if not await require_owner(session, callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
@@ -447,7 +471,8 @@ async def panel_owners(callback: CallbackQuery, session: AsyncSession) -> None:
             ]
         ),
     )
-    await callback.answer()
+    if acknowledge:
+        await callback.answer()
 
 
 @router.callback_query(F.data == "panel:audit")
@@ -682,7 +707,7 @@ async def owner_remove(
         await callback.answer("Доступ владельца снят.", show_alert=True)
         return
     await callback.answer("Владелец удалён.")
-    await panel_owners(callback, session)
+    await panel_owners(callback, session, acknowledge=False)
 
 
 @router.callback_query(F.data == "panel:search")
@@ -847,7 +872,7 @@ async def sanction_unmute(
     try:
         await actions.unmute_user(session, sanction.user_id, callback.from_user.id)
         await callback.answer("Ограничение снято.", show_alert=True)
-        await panel_sanctions(callback, session, settings)
+        await panel_sanctions(callback, session, settings, acknowledge=False)
     except CaseActionError as error:
         await callback.answer(str(error), show_alert=True)
 
@@ -869,7 +894,7 @@ async def allow_remove(callback: CallbackQuery, session: AsyncSession) -> None:
         )
         await session.commit()
     await callback.answer("Удалено из белого списка.")
-    await panel_allowlist(callback, session)
+    await panel_allowlist(callback, session, acknowledge=False)
 
 
 @router.callback_query(F.data.startswith("profile:"))
@@ -887,6 +912,27 @@ async def profile_action(
     profile = await session.get(UserProfile, user_id)
     if profile is None:
         await callback.answer("Пользователь не найден.", show_alert=True)
+        return
+    if action == "privacy":
+        await callback.answer(
+            "У пользователя нет username, а настройки Telegram запрещают прямую "
+            "ссылку. Используйте данные и ID из карточки.",
+            show_alert=True,
+        )
+        return
+    if action == "view":
+        if isinstance(callback.message, Message):
+            allowlisted = await session.get(AllowlistEntry, user_id) is not None
+            await callback.message.answer(
+                await profile_text(session, profile, settings),
+                reply_markup=profile_keyboard(
+                    user_id,
+                    allowlisted=allowlisted,
+                    user_label=user_button_label(user_id, profile),
+                    profile_url=user_profile_url(user_id, profile),
+                ),
+            )
+        await callback.answer("Карточка пользователя отправлена ниже.")
         return
     if action == "allow":
         if await session.get(AllowlistEntry, user_id) is None:

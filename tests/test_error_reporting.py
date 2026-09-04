@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from aiogram.enums import ChatType
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.methods import EditMessageText
 from aiogram.types import Chat, ErrorEvent, Message, Update, User
 from sqlalchemy.exc import IntegrityError
 
@@ -64,3 +66,16 @@ def test_error_stage_uses_only_safe_application_stage() -> None:
         _process_serialized()
     except RuntimeError as error:
         assert error_stage(error) == "проверка сообщения"
+
+
+def test_privacy_restricted_button_error_has_clear_explanation() -> None:
+    error = TelegramBadRequest(
+        method=EditMessageText(text="test", chat_id=1, message_id=2),
+        message="Bad Request: BUTTON_USER_PRIVACY_RESTRICTED",
+    )
+
+    summary = summarize_exception(error)
+
+    assert summary.title == "Telegram отклонил запрос"
+    assert "приватности" in summary.detail
+    assert "прямую ссылку" in summary.detail

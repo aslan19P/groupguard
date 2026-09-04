@@ -13,6 +13,23 @@ from groupguard.models import ModerationCase
 from groupguard.presentation import reason_label
 
 
+def user_profile_button(
+    user_id: int,
+    user_label: str,
+    profile_url: str | None,
+    *,
+    already_open: bool = False,
+) -> InlineKeyboardButton:
+    if profile_url:
+        return InlineKeyboardButton(text=f"👤 {user_label}", url=profile_url)
+    action = "privacy" if already_open else "view"
+    suffix = " · профиль недоступен" if already_open else " · карточка"
+    return InlineKeyboardButton(
+        text=f"👤 {user_label}{suffix}",
+        callback_data=f"profile:{action}:{user_id}",
+    )
+
+
 def dashboard_keyboard(notifications_enabled: bool = True) -> InlineKeyboardMarkup:
     notification_label = "🔔 Уведомления: вкл" if notifications_enabled else "🔕 Уведомления: выкл"
     return InlineKeyboardMarkup(
@@ -48,10 +65,10 @@ def case_keyboard(
     case: ModerationCase,
     *,
     user_label: str,
-    profile_url: str,
+    profile_url: str | None,
 ) -> InlineKeyboardMarkup | None:
     profile_row = [
-        InlineKeyboardButton(text=f"👤 {user_label}", url=profile_url),
+        user_profile_button(case.target_user_id, user_label, profile_url),
         InlineKeyboardButton(
             text="📋 История",
             callback_data=f"case:{case.id}:history",
@@ -92,7 +109,9 @@ def case_keyboard(
     )
 
 
-def case_list_keyboard(cases: list[tuple[ModerationCase, str, str]]) -> InlineKeyboardMarkup:
+def case_list_keyboard(
+    cases: list[tuple[ModerationCase, str, str | None]],
+) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for case, user_label, profile_url in cases:
         rows.append(
@@ -103,17 +122,15 @@ def case_list_keyboard(cases: list[tuple[ModerationCase, str, str]]) -> InlineKe
                 )
             ]
         )
-        rows.append(
-            [InlineKeyboardButton(text=f"👤 {user_label}", url=profile_url)]
-        )
+        rows.append([user_profile_button(case.target_user_id, user_label, profile_url)])
     rows.append([InlineKeyboardButton(text="⬅️ В меню", callback_data="panel:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def owner_list_keyboard(owners: list[tuple[int, str, str]]) -> InlineKeyboardMarkup:
+def owner_list_keyboard(owners: list[tuple[int, str, str | None]]) -> InlineKeyboardMarkup:
     rows = [
         [
-            InlineKeyboardButton(text=f"👤 {user_label}", url=profile_url),
+            user_profile_button(user_id, user_label, profile_url),
             InlineKeyboardButton(
                 text="➖ Удалить",
                 callback_data=f"owner:remove:{user_id}",
@@ -130,25 +147,24 @@ def owner_list_keyboard(owners: list[tuple[int, str, str]]) -> InlineKeyboardMar
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def sanction_list_keyboard(sanctions: list[tuple[str, str, str]]) -> InlineKeyboardMarkup:
+def sanction_list_keyboard(
+    sanctions: list[tuple[str, int, str, str | None]],
+) -> InlineKeyboardMarkup:
     rows = [
         [
-            InlineKeyboardButton(
-                text=f"👤 {user_label}",
-                url=profile_url,
-            ),
+            user_profile_button(user_id, user_label, profile_url),
             InlineKeyboardButton(text="🔊 Снять мут", callback_data=f"sanction:unmute:{sid}"),
         ]
-        for sid, user_label, profile_url in sanctions
+        for sid, user_id, user_label, profile_url in sanctions
     ]
     rows.append([InlineKeyboardButton(text="⬅️ В меню", callback_data="panel:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def allowlist_keyboard(users: list[tuple[int, str, str]]) -> InlineKeyboardMarkup:
+def allowlist_keyboard(users: list[tuple[int, str, str | None]]) -> InlineKeyboardMarkup:
     rows = [
         [
-            InlineKeyboardButton(text=f"👤 {user_label}", url=profile_url),
+            user_profile_button(user_id, user_label, profile_url),
             InlineKeyboardButton(
                 text="➖ Удалить",
                 callback_data=f"allow:remove:{user_id}",
@@ -165,7 +181,7 @@ def profile_keyboard(
     *,
     allowlisted: bool,
     user_label: str,
-    profile_url: str,
+    profile_url: str | None,
 ) -> InlineKeyboardMarkup:
     allow_button = (
         InlineKeyboardButton(
@@ -180,7 +196,14 @@ def profile_keyboard(
     )
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"👤 {user_label}", url=profile_url)],
+            [
+                user_profile_button(
+                    user_id,
+                    user_label,
+                    profile_url,
+                    already_open=True,
+                )
+            ],
             [allow_button],
             [
                 InlineKeyboardButton(

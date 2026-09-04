@@ -25,10 +25,10 @@ RESOLUTION_LABELS = {
 }
 
 
-def user_profile_url(user_id: int, profile: UserProfile | None) -> str:
+def user_profile_url(_user_id: int, profile: UserProfile | None) -> str | None:
     if profile and profile.current_username:
         return f"https://t.me/{profile.current_username}"
-    return f"tg://user?id={user_id}"
+    return None
 
 
 def user_button_label(user_id: int, profile: UserProfile | None) -> str:
@@ -43,8 +43,13 @@ def user_button_label(user_id: int, profile: UserProfile | None) -> str:
 def user_reference(user_id: int, profile: UserProfile | None) -> str:
     display_name = " ".join(profile.display_name.split()) if profile else ""
     display_name = display_name or "Неизвестный пользователь"
-    url = html.escape(user_profile_url(user_id, profile), quote=True)
-    linked_name = f'<a href="{url}">{html.escape(display_name)}</a>'
+    profile_url = user_profile_url(user_id, profile)
+    escaped_name = html.escape(display_name)
+    linked_name = (
+        f'<a href="{html.escape(profile_url, quote=True)}">{escaped_name}</a>'
+        if profile_url
+        else escaped_name
+    )
     username = (
         f"@{html.escape(profile.current_username)}"
         if profile and profile.current_username

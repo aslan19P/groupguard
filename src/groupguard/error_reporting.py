@@ -27,6 +27,7 @@ _ERROR_STAGES = {
     "act": "выполнение решения владельца",
     "deliver_case": "доставка карточки владельцам",
     "sync_case": "синхронизация карточки владельцам",
+    "edit_panel": "обновление личной панели",
 }
 
 
@@ -40,6 +41,8 @@ def error_stage(error: BaseException) -> str | None:
 
 def _telegram_bad_request_detail(error: TelegramBadRequest) -> str:
     message = error.message.casefold()
+    if "user_privacy_restricted" in message:
+        return "Настройки приватности пользователя запрещают прямую ссылку на его профиль."
     if "not enough rights" in message or "administrator rights" in message:
         return "Боту не хватает необходимых прав администратора."
     if "message to delete not found" in message or "message can't be deleted" in message:

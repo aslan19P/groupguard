@@ -4,11 +4,15 @@ from datetime import UTC, datetime
 
 from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.methods import EditMessageText
+from aiogram.methods import AnswerCallbackQuery, EditMessageText
 from aiogram.types import Chat, ErrorEvent, Message, Update, User
 from sqlalchemy.exc import IntegrityError
 
-from groupguard.error_reporting import error_stage, summarize_exception
+from groupguard.error_reporting import (
+    error_stage,
+    is_expired_callback_query_error,
+    summarize_exception,
+)
 from groupguard.handlers.errors import render_error_notification
 
 
@@ -79,3 +83,12 @@ def test_privacy_restricted_button_error_has_clear_explanation() -> None:
     assert summary.title == "Telegram отклонил запрос"
     assert "приватности" in summary.detail
     assert "прямую ссылку" in summary.detail
+
+
+def test_expired_callback_query_error_is_recognized() -> None:
+    error = TelegramBadRequest(
+        method=AnswerCallbackQuery(callback_query_id="old"),
+        message="query is too old and response timeout expired or query ID is invalid",
+    )
+
+    assert is_expired_callback_query_error(error)

@@ -19,6 +19,17 @@ class ErrorSummary:
     detail: str
 
 
+def is_expired_callback_query_error(error: BaseException) -> bool:
+    if not isinstance(error, TelegramBadRequest):
+        return False
+    message = error.message.casefold()
+    return (
+        "query is too old" in message
+        or "response timeout expired" in message
+        or "query id is invalid" in message
+    )
+
+
 _ERROR_STAGES = {
     "upsert_user": "сохранение профиля пользователя",
     "_process_serialized": "проверка сообщения",

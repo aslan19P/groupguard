@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 from aiogram import BaseMiddleware
-from aiogram.types import TelegramObject
+from aiogram.types import CallbackQuery, TelegramObject
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
+
+from groupguard.error_reporting import is_expired_callback_query_error
+
+logger = logging.getLogger(__name__)
 
 
 def create_engine(database_url: str) -> AsyncEngine:
@@ -36,7 +41,17 @@ class DatabaseSessionMiddleware(BaseMiddleware):
                 result = await handler(event, data)
                 await session.commit()
                 return result
-            except Exception:
+            except Exception as error:
+                if isinstance(event, CallbackQuery) and is_expired_callback_query_error(error):
+                    # The callback acknowledgement expired, but the handler may have already
+                    # completed its operation. Preserve any pending database changes.
+                    try:
+                        await session.commit()
+                    except Exception:
+                        await session.rollback()
+                        raise
+                    logger.info("Ignored expired callback query after handler completion")
+                    return None
                 await session.rollback()
                 raise
 

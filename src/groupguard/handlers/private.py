@@ -293,6 +293,13 @@ async def edit_panel(
         raise
 
 
+async def acknowledge_callback(callback: CallbackQuery, text: str = "") -> None:
+    try:
+        await callback.answer(text)
+    except TelegramBadRequest as error:
+        logger.info("Callback acknowledgement unavailable: %s", error)
+
+
 @router.callback_query(F.data == "panel:home")
 async def panel_home(
     callback: CallbackQuery,
@@ -816,10 +823,7 @@ async def case_action(
         await callback.answer("Случай не найден.", show_alert=True)
         return
     if action == "show":
-        try:
-            await callback.answer("Отправляю карточку ниже…")
-        except TelegramBadRequest as error:
-            logger.info("Callback acknowledgement expired case_id=%s: %s", case.id, error)
+        await acknowledge_callback(callback, "Отправляю карточку ниже…")
         delivered = await notifier.deliver_case(
             session,
             case,
@@ -834,6 +838,7 @@ async def case_action(
             )
         return
     if action == "history":
+        await acknowledge_callback(callback)
         profile = await session.get(UserProfile, case.target_user_id)
         if callback.message and profile:
             allowlisted = await session.get(AllowlistEntry, profile.user_id) is not None
@@ -846,9 +851,9 @@ async def case_action(
                     profile_url=user_profile_url(profile.user_id, profile),
                 ),
             )
-        await callback.answer()
         return
     if action == "unmute":
+        await acknowledge_callback(callback, "Снимаю ограничение…")
         try:
             await actions.unmute_user(
                 session,
@@ -856,15 +861,16 @@ async def case_action(
                 callback.from_user.id,
                 case_id=case.id,
             )
-            await callback.answer("Ограничение снято.", show_alert=True)
         except CaseActionError as error:
-            await callback.answer(str(error), show_alert=True)
+            if isinstance(callback.message, Message):
+                await callback.message.answer(f"⚠️ {error}")
         return
+    await acknowledge_callback(callback, "Сохраняю решение…")
     try:
         await actions.act(session, case_id, callback.from_user.id, action)
-        await callback.answer("Решение сохранено.", show_alert=True)
     except CaseActionError as error:
-        await callback.answer(str(error), show_alert=True)
+        if isinstance(callback.message, Message):
+            await callback.message.answer(f"⚠️ {error}")
 
 
 @router.callback_query(F.data.startswith("sanction:unmute:"))

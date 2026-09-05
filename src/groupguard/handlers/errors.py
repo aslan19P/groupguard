@@ -8,7 +8,11 @@ from aiogram import Router
 from aiogram.types import CallbackQuery, ErrorEvent, Message, Update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from groupguard.error_reporting import error_stage, summarize_exception
+from groupguard.error_reporting import (
+    error_stage,
+    is_expired_callback_query_error,
+    summarize_exception,
+)
 from groupguard.services.notifications import NotificationService
 
 router = Router(name="errors")
@@ -86,6 +90,14 @@ async def unexpected_error(
     session: AsyncSession,
     notifier: NotificationService,
 ) -> bool:
+    if is_expired_callback_query_error(event.exception):
+        logger.info("Ignoring expired callback query in error handler")
+        try:
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            logger.error("Could not preserve work after expired callback query", exc_info=True)
+        return True
     incident_id = secrets.token_hex(4)
     logger.error(
         "Unhandled update error incident_id=%s error_type=%s",

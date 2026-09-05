@@ -149,6 +149,16 @@ async def test_recent_fingerprints_are_limited_to_calendar_day(
                     local_date=date(2026, 9, 5),
                     normalized_text="today",
                     text_hash="b" * 64,
+                    source_created_at=now - timedelta(minutes=30),
+                    expires_at=now + timedelta(hours=48),
+                ),
+                MessageFingerprint(
+                    chat_id=-1001,
+                    message_id=103,
+                    user_id=11,
+                    local_date=date(2026, 9, 5),
+                    normalized_text="today later",
+                    text_hash="c" * 64,
                     source_created_at=now,
                     expires_at=now + timedelta(hours=48),
                 ),
@@ -164,7 +174,7 @@ async def test_recent_fingerprints_are_limited_to_calendar_day(
             since=now - timedelta(days=7),
         )
 
-    assert [item.message_id for item in recent] == [102]
+    assert [item.message_id for item in recent] == [102, 103]
 
 
 @pytest.mark.asyncio
@@ -251,6 +261,8 @@ async def test_cleanup_retention_boundaries(
                     reason="similar_text",
                     excerpt="temporary text",
                     phone_masks=["998 ***** 4567"],
+                    reference_message_id=2,
+                    reference_message_link="https://t.me/c/1001/2",
                     delete_available_until=now - timedelta(days=14),
                     created_at=now - timedelta(days=15),
                 ),
@@ -279,6 +291,8 @@ async def test_cleanup_retention_boundaries(
         assert case is not None
         assert case.status == "expired"
         assert case.excerpt is None
+        assert case.reference_message_id is None
+        assert case.reference_message_link is None
         profile = await session.get(UserProfile, 5)
         assert profile is not None and profile.violation_count == 7
 

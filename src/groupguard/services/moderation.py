@@ -203,6 +203,7 @@ class ModerationService:
         )
 
         exact: MessageFingerprint | None = None
+        reference: MessageFingerprint | None = None
         suspicion_reason: str | None = None
         for candidate in recent:
             match = classify_candidate(
@@ -218,8 +219,11 @@ class ModerationService:
             )
             if match.exact:
                 exact = candidate
+                reference = candidate
                 break
-            suspicion_reason = suspicion_reason or match.suspicion_reason
+            if match.suspicion_reason and reference is None:
+                reference = candidate
+                suspicion_reason = match.suspicion_reason
 
         stored = MessageFingerprint(
             chat_id=managed.chat_id,
@@ -254,6 +258,12 @@ class ModerationService:
             phone_masks=list(fingerprint.phone_masks),
             media_file_id=photo.file_id if photo else None,
             message_link=message_link(managed.username, managed.chat_id, message.message_id),
+            reference_message_id=reference.message_id if reference else None,
+            reference_message_link=(
+                message_link(managed.username, managed.chat_id, reference.message_id)
+                if reference
+                else None
+            ),
             delete_available_until=source_time + timedelta(hours=48),
         )
         case, created = await create_case_if_absent(session, case)

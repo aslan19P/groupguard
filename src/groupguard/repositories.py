@@ -131,6 +131,9 @@ async def get_recent_fingerprints(
                     MessageFingerprint.message_id != exclude_message_id,
                     MessageFingerprint.local_date == local_date,
                     MessageFingerprint.source_created_at >= since,
+                ).order_by(
+                    MessageFingerprint.source_created_at.asc(),
+                    MessageFingerprint.message_id.asc(),
                 )
             )
         ).all()
@@ -234,16 +237,33 @@ async def cleanup_expired(session: AsyncSession) -> dict[str, int]:
             ModerationCase.status == "open",
             ModerationCase.created_at < now - timedelta(days=14),
         )
-        .values(status="expired", excerpt=None, phone_masks=[], media_file_id=None)
+        .values(
+            status="expired",
+            excerpt=None,
+            phone_masks=[],
+            media_file_id=None,
+            reference_message_id=None,
+            reference_message_link=None,
+        )
     )
     scrubbed_cases = await session.execute(
         update(ModerationCase)
         .where(
             ModerationCase.status != "open",
             ModerationCase.created_at < now - timedelta(days=30),
-            or_(ModerationCase.excerpt.is_not(None), ModerationCase.media_file_id.is_not(None)),
+            or_(
+                ModerationCase.excerpt.is_not(None),
+                ModerationCase.media_file_id.is_not(None),
+                ModerationCase.reference_message_link.is_not(None),
+            ),
         )
-        .values(excerpt=None, phone_masks=[], media_file_id=None)
+        .values(
+            excerpt=None,
+            phone_masks=[],
+            media_file_id=None,
+            reference_message_id=None,
+            reference_message_link=None,
+        )
     )
     audits = await session.execute(
         delete(AuditEvent).where(AuditEvent.created_at < now - timedelta(days=30))

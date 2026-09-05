@@ -43,11 +43,18 @@ def render_case(case: ModerationCase, profile: UserProfile | None) -> str:
     )
     phones = ", ".join(case.phone_masks) if case.phone_masks else "не указаны"
     excerpt = html.escape(case.excerpt or "нет сохранённого текста")
-    link = (
-        f'<a href="{html.escape(case.message_link)}">Открыть оригинал</a>'
+    current_link = (
+        f'<a href="{html.escape(case.message_link)}">Открыть сообщение случая</a>'
         if case.message_link
         else ""
     )
+    reference_link = (
+        f'<a href="{html.escape(case.reference_message_link)}">'
+        "Открыть первое совпавшее сообщение</a>"
+        if case.reference_message_link
+        else ""
+    )
+    links = "\n".join(link for link in (current_link, reference_link) if link)
     return (
         f"<b>⚠️ Случай модерации</b>\n\n"
         f"Автор: {user_reference(case.target_user_id, profile)}\n"
@@ -57,7 +64,7 @@ def render_case(case: ModerationCase, profile: UserProfile | None) -> str:
         f"{html.escape(deletion)}\n"
         f"Статус: {html.escape(status)}\n\n"
         f"<blockquote>{excerpt}</blockquote>\n"
-        f"{link}"
+        f"{links}"
     )
 
 

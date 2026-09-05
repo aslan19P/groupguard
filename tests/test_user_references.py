@@ -37,6 +37,8 @@ def moderation_case() -> ModerationCase:
         reason="exact_duplicate",
         excerpt="Объявление",
         phone_masks=["998 ***** 3366"],
+        message_link="https://t.me/c/1001/12",
+        reference_message_link="https://t.me/c/1001/11",
         delete_available_until=datetime.now(UTC) + timedelta(hours=48),
     )
 
@@ -107,6 +109,11 @@ def test_case_list_and_card_use_safe_profile_action_and_readable_reason() -> Non
     assert card_keyboard.inline_keyboard[-1][0].callback_data == "profile:view:2063305202"
     assert "tg://user" not in render_case(case, user)
     assert "username отсутствует" in render_case(case, user)
+    rendered = render_case(case, user)
+    assert "Открыть сообщение случая" in rendered
+    assert "Открыть первое совпавшее сообщение" in render_case(case, user)
+    assert "https://t.me/c/1001/12" in rendered
+    assert "https://t.me/c/1001/11" in rendered
 
 
 def test_public_username_still_uses_direct_profile_links_everywhere() -> None:

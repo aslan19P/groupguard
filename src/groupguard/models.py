@@ -147,6 +147,8 @@ class ModerationCase(TimestampMixin, Base):
     phone_masks: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
     media_file_id: Mapped[str | None] = mapped_column(Text)
     message_link: Mapped[str | None] = mapped_column(Text)
+    reference_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    reference_message_link: Mapped[str | None] = mapped_column(Text)
     delete_available_until: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

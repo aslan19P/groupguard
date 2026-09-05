@@ -814,11 +814,21 @@ async def case_action(
         await callback.answer("Случай не найден.", show_alert=True)
         return
     if action == "show":
-        await notifier.deliver_case(
-            session, case, force_all=True, only_owner_id=callback.from_user.id
+        delivered = await notifier.deliver_case(
+            session,
+            case,
+            force_all=True,
+            only_owner_id=callback.from_user.id,
+            resend=True,
         )
         await session.commit()
-        await callback.answer("Карточка отправлена ниже.")
+        if delivered:
+            await callback.answer("Карточка отправлена ниже.")
+        else:
+            await callback.answer(
+                "Карточку не удалось отправить. Проверьте, что бот не заблокирован.",
+                show_alert=True,
+            )
         return
     if action == "history":
         profile = await session.get(UserProfile, case.target_user_id)

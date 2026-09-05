@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -18,6 +19,7 @@ from groupguard.config import Settings
 from groupguard.models import (
     AllowlistEntry,
     AuditEvent,
+    CaseDelivery,
     ManagedChat,
     MessageFingerprint,
     ModerationCase,
@@ -34,6 +36,7 @@ from groupguard.repositories import (
 )
 from groupguard.services.cases import CaseActionError, CaseActionService
 from groupguard.services.moderation import ModerationService
+from groupguard.services.notifications import NotificationService
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
@@ -318,6 +321,67 @@ class FakeNotifier:
         **kwargs: object,
     ) -> None:
         self.delivery_count += 1
+
+
+class FakeDeliveryBot:
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+
+    async def send_message(self, chat_id: int, text: str, **kwargs: Any) -> SimpleNamespace:
+        self.sent.append({"chat_id": chat_id, "text": text, **kwargs})
+        return SimpleNamespace(message_id=len(self.sent))
+
+
+@pytest.mark.asyncio
+async def test_case_list_show_resends_card_after_initial_delivery(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    now = datetime.now(UTC)
+    async with session_factory() as session:
+        session.add_all(
+            [
+                UserProfile(user_id=1, display_name="Owner"),
+                UserProfile(user_id=5, display_name="Driver"),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                Owner(user_id=1, private_chat_id=101),
+                ModerationCase(
+                    chat_id=-1001,
+                    source_message_id=10,
+                    target_user_id=5,
+                    reason="repeated_media",
+                    excerpt="Фото",
+                    message_link="https://t.me/c/1001/10",
+                    reference_message_link="https://t.me/c/1001/9",
+                    delete_available_until=now + timedelta(hours=48),
+                ),
+            ]
+        )
+        await session.commit()
+        case = await session.scalar(select(ModerationCase))
+        assert case is not None
+
+        bot = FakeDeliveryBot()
+        notifier = NotificationService(bot)  # type: ignore[arg-type]
+        assert await notifier.deliver_case(session, case) == 1
+        await session.commit()
+        assert await notifier.deliver_case(
+            session,
+            case,
+            force_all=True,
+            only_owner_id=1,
+            resend=True,
+        ) == 1
+        await session.commit()
+
+        delivery = await session.scalar(select(CaseDelivery).where(CaseDelivery.case_id == case.id))
+
+    assert delivery is not None
+    assert delivery.message_id == 2
+    assert len(bot.sent) == 2
 
 
 @pytest.mark.asyncio

@@ -79,7 +79,8 @@ class NotificationService:
         *,
         force_all: bool = False,
         only_owner_id: int | None = None,
-    ) -> None:
+        resend: bool = False,
+    ) -> int:
         profile = await session.get(UserProfile, case.target_user_id)
         owners = await list_owners(session, notifications_only=not force_all)
         if only_owner_id is not None:
@@ -92,6 +93,7 @@ class NotificationService:
             user_label=user_button_label(case.target_user_id, profile),
             profile_url=user_profile_url(case.target_user_id, profile),
         )
+        delivered_count = 0
         for owner in owners:
             existing = await session.scalar(
                 select(CaseDelivery).where(
@@ -99,7 +101,7 @@ class NotificationService:
                     CaseDelivery.owner_user_id == owner.user_id,
                 )
             )
-            if existing is not None:
+            if existing is not None and not resend:
                 continue
             try:
                 if case.media_file_id:
@@ -118,19 +120,29 @@ class NotificationService:
                         disable_web_page_preview=True,
                     )
                     delivery_type = "text"
-                session.add(
-                    CaseDelivery(
-                        case_id=case.id,
-                        owner_user_id=owner.user_id,
-                        private_chat_id=owner.private_chat_id,
-                        message_id=sent.message_id,
-                        delivery_type=delivery_type,
+                if existing is None:
+                    session.add(
+                        CaseDelivery(
+                            case_id=case.id,
+                            owner_user_id=owner.user_id,
+                            private_chat_id=owner.private_chat_id,
+                            message_id=sent.message_id,
+                            delivery_type=delivery_type,
+                        )
                     )
-                )
+                else:
+                    existing.private_chat_id = owner.private_chat_id
+                    existing.message_id = sent.message_id
+                    existing.delivery_type = delivery_type
+                delivered_count += 1
             except (TelegramBadRequest, TelegramForbiddenError) as error:
                 logger.warning(
-                    "Failed to deliver moderation case owner_id=%s: %s", owner.user_id, error
+                    "Failed to deliver moderation case case_id=%s owner_id=%s: %s",
+                    case.id,
+                    owner.user_id,
+                    error,
                 )
+        return delivered_count
 
     async def sync_case(self, session: AsyncSession, case: ModerationCase) -> None:
         profile = await session.get(UserProfile, case.target_user_id)

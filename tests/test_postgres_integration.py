@@ -511,3 +511,37 @@ async def test_manual_delete_rejects_expired_telegram_window(
         with pytest.raises(CaseActionError, match="48 часов"):
             await service.act(session, case.id, 1, "delete")
         bot.delete_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_manual_delete_records_missing_message_as_deleted(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    case = ModerationCase(
+        chat_id=-1001,
+        source_message_id=23,
+        target_user_id=7,
+        reason="similar_text",
+        delete_available_until=datetime.now(UTC) + timedelta(hours=48),
+    )
+    async with session_factory() as session:
+        session.add(UserProfile(user_id=7, display_name="Driver"))
+        session.add(case)
+        await session.commit()
+        bot = AsyncMock()
+        bot.delete_message.side_effect = TelegramBadRequest(
+            method=DeleteMessage(chat_id=-1001, message_id=23),
+            message="message to delete not found",
+        )
+        notifier = FakeNotifier()
+        service = CaseActionService(bot, notifier)  # type: ignore[arg-type]
+
+        result = await service.act(session, case.id, 1, "delete")
+
+        profile = await session.get(UserProfile, 7)
+        assert profile is not None
+        assert (profile.violation_count, profile.deletion_count) == (1, 1)
+
+    assert result.resolution == "deleted_missing"
+    assert result.status == "resolved"
+    assert notifier.sync_count == 1

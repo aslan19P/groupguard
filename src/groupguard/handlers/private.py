@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import html
+import logging
 import re
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -74,6 +75,7 @@ from groupguard.services.owners import invite_validation_error
 router = Router(name="private")
 router.message.filter(F.chat.type == ChatType.PRIVATE)
 router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
+logger = logging.getLogger(__name__)
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{5,32}$")
 
@@ -814,6 +816,10 @@ async def case_action(
         await callback.answer("Случай не найден.", show_alert=True)
         return
     if action == "show":
+        try:
+            await callback.answer("Отправляю карточку ниже…")
+        except TelegramBadRequest as error:
+            logger.info("Callback acknowledgement expired case_id=%s: %s", case.id, error)
         delivered = await notifier.deliver_case(
             session,
             case,
@@ -822,12 +828,9 @@ async def case_action(
             resend=True,
         )
         await session.commit()
-        if delivered:
-            await callback.answer("Карточка отправлена ниже.")
-        else:
-            await callback.answer(
+        if not delivered and isinstance(callback.message, Message):
+            await callback.message.answer(
                 "Карточку не удалось отправить. Проверьте, что бот не заблокирован.",
-                show_alert=True,
             )
         return
     if action == "history":

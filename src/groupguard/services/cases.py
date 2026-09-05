@@ -17,6 +17,11 @@ class CaseActionError(RuntimeError):
     pass
 
 
+def _message_is_missing(error: TelegramBadRequest) -> bool:
+    detail = error.message.casefold()
+    return "message to delete not found" in detail
+
+
 class CaseActionService:
     def __init__(self, bot: Bot, notifier: NotificationService) -> None:
         self.bot = bot
@@ -43,9 +48,9 @@ class CaseActionService:
         elif action == "delete":
             if case.delete_available_until <= now:
                 raise CaseActionError("Прошло более 48 часов: Telegram уже не разрешает удаление.")
-            await self._delete(case)
+            message_missing = not await self._delete(case)
             await mark_violation(session, case.target_user_id, deleted=True)
-            resolution = "deleted"
+            resolution = "deleted_missing" if message_missing else "deleted"
         elif action == "mute":
             if case.delete_available_until <= now:
                 raise CaseActionError("Прошло более 48 часов: удалить сообщение уже нельзя.")
@@ -74,16 +79,22 @@ class CaseActionService:
             actor_user_id=actor_user_id,
             target_user_id=case.target_user_id,
             case_id=case.id,
+            details={"message_missing": action == "delete" and resolution == "deleted_missing"},
         )
         await session.commit()
         await self.notifier.sync_case(session, case)
         return case
 
-    async def _delete(self, case: ModerationCase) -> None:
+    async def _delete(self, case: ModerationCase) -> bool:
         try:
             await self.bot.delete_message(case.chat_id, case.source_message_id)
-        except (TelegramBadRequest, TelegramForbiddenError) as error:
+        except TelegramBadRequest as error:
+            if _message_is_missing(error):
+                return False
             raise CaseActionError(f"Telegram не дал удалить сообщение: {error.message}") from error
+        except TelegramForbiddenError as error:
+            raise CaseActionError(f"Telegram не дал удалить сообщение: {error.message}") from error
+        return True
 
     async def _mute_and_delete(
         self,
@@ -115,17 +126,21 @@ class CaseActionService:
             )
         )
         deleted = True
+        delete_failed = False
         try:
-            await self.bot.delete_message(case.chat_id, case.source_message_id)
-        except (TelegramBadRequest, TelegramForbiddenError):
+            deleted = await self._delete(case)
+        except CaseActionError:
             deleted = False
+            delete_failed = True
             await self.notifier.critical(
                 session,
                 "Пользователь заглушён, но сообщение удалить не удалось. Случай: "
                 f"<code>{case.id}</code>.",
             )
         await mark_violation(session, case.target_user_id, deleted=deleted, muted=True)
-        return "muted" if deleted else "mute_partial"
+        if deleted:
+            return "muted"
+        return "mute_partial" if delete_failed else "mute_missing"
 
     async def unmute_user(
         self,

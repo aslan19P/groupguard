@@ -90,6 +90,8 @@ def classify_candidate(
     candidate: MessageFingerprint,
     similarity_threshold: int,
 ) -> MatchResult:
+    if candidate.local_date != local_date:
+        return MatchResult()
     phone_overlap = hashes_overlap(phone_hashes, candidate.phone_hashes)
     if (
         phone_hashes
@@ -196,6 +198,7 @@ class ModerationService:
             session,
             managed.chat_id,
             exclude_message_id=message.message_id,
+            local_date=local_date,
             since=now - timedelta(days=7),
         )
 

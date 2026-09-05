@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import cast
 
 from sqlalchemy import delete, func, or_, select, update
@@ -120,6 +120,7 @@ async def get_recent_fingerprints(
     chat_id: int,
     *,
     exclude_message_id: int,
+    local_date: date,
     since: datetime,
 ) -> list[MessageFingerprint]:
     return list(
@@ -128,6 +129,7 @@ async def get_recent_fingerprints(
                 select(MessageFingerprint).where(
                     MessageFingerprint.chat_id == chat_id,
                     MessageFingerprint.message_id != exclude_message_id,
+                    MessageFingerprint.local_date == local_date,
                     MessageFingerprint.source_created_at >= since,
                 )
             )

@@ -94,6 +94,28 @@ def test_similar_text_same_phone_goes_to_manual_queue() -> None:
     assert result.suspicion_reason == "similar_text"
 
 
+def test_new_calendar_day_does_not_create_any_case() -> None:
+    previous = candidate("Такси Шовот Ургенч +998901234567")
+    result = classify(
+        "Такси Шовот в Ургенч 90 123 45 67",
+        previous,
+        local_date=date(2026, 9, 3),
+    )
+    assert not result.exact
+    assert result.suspicion_reason is None
+
+
+def test_new_calendar_day_ignores_repeated_media_too() -> None:
+    previous = candidate("", media_unique_id="telegram-file")
+    result = classify(
+        "",
+        previous,
+        local_date=date(2026, 9, 3),
+        media_unique_id="telegram-file",
+    )
+    assert result.suspicion_reason is None
+
+
 def test_repeated_and_similar_media_go_to_manual_queue() -> None:
     same_file = candidate("", media_unique_id="telegram-file")
     assert classify("", same_file, media_unique_id="telegram-file").suspicion_reason == (

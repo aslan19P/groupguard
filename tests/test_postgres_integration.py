@@ -26,7 +26,12 @@ from groupguard.models import (
     UsernameAlias,
     UserProfile,
 )
-from groupguard.repositories import cleanup_expired, is_immune, upsert_user
+from groupguard.repositories import (
+    cleanup_expired,
+    get_recent_fingerprints,
+    is_immune,
+    upsert_user,
+)
 from groupguard.services.cases import CaseActionError, CaseActionService
 from groupguard.services.moderation import ModerationService
 
@@ -117,6 +122,49 @@ async def test_concurrent_user_upsert_is_atomic(
 
     assert len(profiles) == 1
     assert len(aliases) == 1
+
+
+@pytest.mark.asyncio
+async def test_recent_fingerprints_are_limited_to_calendar_day(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    now = datetime.now(UTC)
+    async with session_factory() as session:
+        session.add_all(
+            [
+                MessageFingerprint(
+                    chat_id=-1001,
+                    message_id=101,
+                    user_id=10,
+                    local_date=date(2026, 9, 4),
+                    normalized_text="yesterday",
+                    text_hash="a" * 64,
+                    source_created_at=now - timedelta(hours=1),
+                    expires_at=now + timedelta(hours=47),
+                ),
+                MessageFingerprint(
+                    chat_id=-1001,
+                    message_id=102,
+                    user_id=10,
+                    local_date=date(2026, 9, 5),
+                    normalized_text="today",
+                    text_hash="b" * 64,
+                    source_created_at=now,
+                    expires_at=now + timedelta(hours=48),
+                ),
+            ]
+        )
+        await session.commit()
+
+        recent = await get_recent_fingerprints(
+            session,
+            -1001,
+            exclude_message_id=999,
+            local_date=date(2026, 9, 5),
+            since=now - timedelta(days=7),
+        )
+
+    assert [item.message_id for item in recent] == [102]
 
 
 @pytest.mark.asyncio
